@@ -8,41 +8,35 @@ int windowWidth = 2560;
 int windowHeight = 1440;
 
 GLuint pbo;
-float globalZoom = 1.0f;
-float offsetx = 0.0f;
-float offsety = 0.0f;
-
-void initPBO() {
-    glGenBuffers(1, &pbo);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-    glBufferData(GL_PIXEL_UNPACK_BUFFER, windowWidth * windowHeight * 4, NULL, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-}
+double globalZoom = 1.0;
+double offsetx = 0.0;
+double offsety = 0.0;
 
 cudaGraphicsResource* cudaPBOResource;
 
-void registerPBOWithCUDA() {
-    cudaGraphicsGLRegisterBuffer(&cudaPBOResource, pbo, cudaGraphicsMapFlagsWriteDiscard);
-}
-
-__global__ void computeFractalKernel(uchar4* pixels, int width, int height, float zoom, float offsetX, float offsetY) {
+__global__ void computeFractalKernel(uchar4* pixels,
+                                     int width,
+                                     int height,
+                                     double zoom,
+                                     double offsetX,
+                                     double offsetY)
+{
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x >= width || y >= height)
-        return;
+    if (x >= width || y >= height) return;
 
-    float jx = 1.5f * (x - width / 2) / (0.5f * zoom * width) + offsetX;
-    float jy = (y - height / 2) / (0.5f * zoom * height) + offsetY;
+    double jx = 1.5 * (x - width / 2.0) / (0.5 * zoom * width) + offsetX;
+    double jy = (y - height / 2.0) / (0.5 * zoom * height) + offsetY;
 
-    float zx = 0.0f;
-    float zy = 0.0f;
+    double zx = 0.0;
+    double zy = 0.0;
     int iter = 0;
     const int maxIter = 2000;
 
-    while (zx * zx + zy * zy < 4.0f && iter < maxIter) {
-        float temp = zx * zx - zy * zy + jx;
-        zy = 2.0f * zx * zy + jy;
+    while ((zx * zx + zy * zy < 4.0) && (iter < maxIter)) {
+        double temp = zx * zx - zy * zy + jx;
+        zy = 2.0 * zx * zy + jy;
         zx = temp;
         iter++;
     }
@@ -51,47 +45,69 @@ __global__ void computeFractalKernel(uchar4* pixels, int width, int height, floa
     if (iter == maxIter) {
         color = make_uchar4(0, 0, 0, 255);
     } else {
-        color = make_uchar4(iter % 256, iter % 256, iter % 256, 255);
+        color = make_uchar4(iter % 256, (iter * 5) % 256, (iter * 13) % 256, 255);
     }
 
     int idx = y * width + x;
     pixels[idx] = color;
 }
 
-void launchFractalKernel(uchar4* d_pixels) {
-    dim3 blockSize(16, 16);
-    dim3 gridSize((windowWidth + blockSize.x - 1) / blockSize.x, (windowHeight + blockSize.y - 1) / blockSize.y);
+void initPBO()
+{
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, windowWidth * windowHeight * 4, NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+}
 
-    computeFractalKernel<<<gridSize, blockSize>>>(d_pixels, windowWidth, windowHeight, 1.0f, 0.0f, 0.0f);
+void registerPBOWithCUDA()
+{
+    cudaGraphicsGLRegisterBuffer(&cudaPBOResource, pbo, cudaGraphicsMapFlagsWriteDiscard);
+}
+
+void launchFractalKernel(uchar4* d_pixels)
+{
+    dim3 blockSize(16, 16);
+    dim3 gridSize(
+            (windowWidth + blockSize.x - 1) / blockSize.x,
+            (windowHeight + blockSize.y - 1) / blockSize.y
+    );
+
+    computeFractalKernel<<<gridSize, blockSize>>>(
+            d_pixels,
+            windowWidth,
+            windowHeight,
+            globalZoom,
+            offsetx,
+            offsety
+    );
 
     cudaDeviceSynchronize();
 }
 
-void handleMouseWheel(int wheel, int direction, int x, int y) {
+void handleMouseWheel(int wheel, int direction, int x, int y)
+{
     float mouseNormX = 2.0f * (x / (float)windowWidth) - 1.0f;
     float mouseNormY = 1.0f - 2.0f * (y / (float)windowHeight);
 
-    float oldFractalX = (mouseNormX / globalZoom) + offsetx;
-    float oldFractalY = (mouseNormY / globalZoom) + offsety;
+    double oldFractalX = (mouseNormX / globalZoom) + offsetx;
+    double oldFractalY = (mouseNormY / globalZoom) + offsety;
 
     if (direction > 0) {
-        globalZoom *= 1.25f;
-    } else if (direction < 0) {
-        globalZoom *= 0.8f;
+        globalZoom *= 1.1;
+    } else {
+        globalZoom *= 0.9;
     }
 
-    float newFractalX = (mouseNormX / globalZoom) + offsetx;
-    float newFractalY = (mouseNormY / globalZoom) + offsety;
+    double newFractalX = (mouseNormX / globalZoom) + offsetx;
+    double newFractalY = (mouseNormY / globalZoom) + offsety;
 
     offsetx += (oldFractalX - newFractalX);
     offsety += (oldFractalY - newFractalY);
-
-    if (globalZoom < 1.0f) {
-        globalZoom = 1.0f;
-    }
 }
 
-void display() {
+void display()
+{
     cudaGraphicsMapResources(1, &cudaPBOResource, 0);
     uchar4* d_pixels;
     size_t num_bytes;
@@ -111,7 +127,8 @@ void display() {
     glutPostRedisplay();
 }
 
-void cleanup() {
+void cleanup()
+{
     if (cudaPBOResource) {
         cudaGraphicsUnregisterResource(cudaPBOResource);
         cudaPBOResource = nullptr;
@@ -123,11 +140,12 @@ void cleanup() {
     cudaDeviceReset();
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
     glutInitWindowSize(windowWidth, windowHeight);
-    glutCreateWindow("CUDA Fractal");
+    glutCreateWindow("CUDA Mandelbrot");
     glutMouseWheelFunc(handleMouseWheel);
 
     GLenum err = glewInit();
@@ -137,11 +155,9 @@ int main(int argc, char** argv) {
     }
 
     initPBO();
-
     registerPBOWithCUDA();
 
     glutDisplayFunc(display);
-
     atexit(cleanup);
 
     glutMainLoop();
